@@ -47,6 +47,7 @@ const argv = yargs(hideBin(process.argv))
   .option('strokeWidth', { type: 'number', default: 2 })   // 白色描边
   .option('samplesPerCurve', { type: 'number', default: 64 }) // 每段 Bezier 采样数
   .option('modelUrl', { type: 'string', default: '' })
+  .option('showProgress', { type: 'boolean', default: true, description: '显示处理进度' })
   .argv;
 
 const W = argv.width | 0;
@@ -239,14 +240,36 @@ function getKP(map, name) {
   try { stdout._handle && stdout._handle.setBlocking && stdout._handle.setBlocking(true); } catch {}
 
   let pending = Buffer.alloc(0);
+  let frameCount = 0;
+  let startTime = Date.now();
+  let lastProgressTime = startTime;
+  
   stdin.on('error', () => {});
   stdout.on('error', () => process.exit(0));
+
+  // 进度显示函数
+  const showProgress = (currentFrame, fps) => {
+    if (!argv.showProgress) return;
+    
+    const now = Date.now();
+    if (now - lastProgressTime >= 1000) { // 每秒更新一次
+      const elapsed = (now - startTime) / 1000;
+      const estimatedTotal = currentFrame / fps;
+      const progress = Math.min(100, (elapsed / estimatedTotal) * 100);
+      const eta = Math.max(0, estimatedTotal - elapsed);
+      
+      process.stderr.write(`\r处理进度: ${currentFrame} 帧 | 已用时间: ${elapsed.toFixed(1)}s | 预估进度: ${progress.toFixed(1)}% | 剩余时间: ${eta.toFixed(1)}s`);
+      lastProgressTime = now;
+    }
+  };
 
   for await (const chunk of stdin) {
     pending = Buffer.concat([pending, chunk]);
     while (pending.length >= FRAME_SIZE) {
       const frame = pending.subarray(0, FRAME_SIZE);
       pending = pending.subarray(FRAME_SIZE);
+      
+      frameCount++;
 
       // [H,W,3] tensor
       const img = tf.tensor3d(new Uint8Array(frame), [H, W, 3], 'int32');
@@ -289,12 +312,22 @@ function getKP(map, name) {
         strokePolylineRGB24(frame, poly, argv.strokeWidth);
       }
 
+      // 显示进度
+      showProgress(frameCount, argv.fps);
+      
       if (!stdout.write(frame)) {
         await new Promise(res => stdout.once('drain', res));
       }
     }
   }
 
+  // 处理完成，显示最终统计
+  if (argv.showProgress) {
+    const totalTime = (Date.now() - startTime) / 1000;
+    const avgFps = frameCount / totalTime;
+    process.stderr.write(`\n处理完成！总帧数: ${frameCount} | 总时间: ${totalTime.toFixed(1)}s | 平均处理速度: ${avgFps.toFixed(1)} fps\n`);
+  }
+  
   stdout.end();
 })().catch(err => {
   console.error('[processor] fatal:', err && err.stack || err);
