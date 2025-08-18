@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-/* processor.js — Bezier“液态面具”后端复刻 (CommonJS)
+/* processor.js — Bezier"液态面具"后端复刻 (CommonJS)
  * stdin  : rawvideo (rgb24)
  * stdout : rawvideo (rgb24)
  *
  * 与前端一致：
- *  - PoseNet: MobileNetV1 / stride=16 / inputResolution=500 / multiplier=0.75 / quantBytes=2
+ *  - pose-detection: MoveNet / modelType=lightning / enableSmoothing=true
  *  - 多人姿态，flipHorizontal 默认 false（如素材为镜像可改 true）
  *  - 面具尺寸 = 基于耳距：maskW=1.3*faceWidth, maskH=1.8*faceWidth
  *  - 面具形状 = 两段三次 Bezier + 连接线，参数同前端 drawLiquidMask
@@ -18,8 +18,8 @@
  *       -c:v libx264 -movflags +faststart -f mp4 pipe:1
  */
 
-const tf = require('@tensorflow/tfjs-node');
-const posenet = require('@tensorflow-models/posenet');
+const tf = require('@tensorflow/tfjs');
+const poseDetection = require('@tensorflow-models/pose-detection');
 const yargs = require('yargs');
 const { hideBin } = require('yargs/helpers');
 
@@ -29,11 +29,10 @@ const argv = yargs(hideBin(process.argv))
   .option('height', { type: 'number', default: 720 })
   .option('fps', { type: 'number', default: 25 })
 
-  // PoseNet（与前端一致）
-  .option('quantBytes', { type: 'number', default: 2 })
-  .option('multiplier', { type: 'number', default: 0.75 })
-  .option('outputStride', { type: 'number', default: 16 })
-  .option('inputResolution', { type: 'number', default: 500 })
+  // pose-detection（与前端一致）
+  .option('modelType', { type: 'string', default: 'SINGLEPOSE_LIGHTNING' })
+  .option('enableSmoothing', { type: 'boolean', default: true })
+  .option('enableSegmentation', { type: 'boolean', default: false })
 
   // 多人参数
   .option('maxDetections', { type: 'number', default: 5 })
@@ -74,22 +73,22 @@ function cubicPoint(p0, p1, p2, p3, t) {
 function buildLiquidMaskPolyline(maskW, maskH, samplesPerCurve) {
   const halfW = maskW / 2;
 
-  // 前端路径（局部坐标，原点在 mask 中心）：
-  // moveTo(-W/2, -H*0.2)
-  // bezierCurveTo(-W*0.4, -H*0.6,  W*0.4, -H*0.6,  W/2, -H*0.2)
-  // lineTo(W/2, -H*0.05)
-  // bezierCurveTo( W*0.4,  H*0.05, -W*0.4,  H*0.05, -W/2, -H*0.01)
+  // 前端路径（局部坐标，原点在 mask 中心）- 上下翻转版本：
+  // moveTo(-W/2, H*0.2)
+  // bezierCurveTo(-W*0.4, H*0.6,  W*0.4, H*0.6,  W/2, H*0.2)
+  // lineTo(W/2, H*0.05)
+  // bezierCurveTo( W*0.4, -H*0.05, -W*0.4, -H*0.05, -W/2, H*0.01)
   // closePath()
 
-  const p0 = { x: -halfW, y: -maskH * 0.2 };
-  const p1 = { x: -maskW * 0.4, y: -maskH * 0.6 };
-  const p2 = { x:  maskW * 0.4, y: -maskH * 0.6 };
-  const p3 = { x:  halfW,       y: -maskH * 0.2 };
+  const p0 = { x: -halfW, y: maskH * 0.2 };
+  const p1 = { x: -maskW * 0.4, y: maskH * 0.6 };
+  const p2 = { x:  maskW * 0.4, y: maskH * 0.6 };
+  const p3 = { x:  halfW,       y: maskH * 0.2 };
 
-  const q0 = { x:  halfW,       y: -maskH * 0.05 };
-  const q1 = { x:  maskW * 0.4, y:  maskH * 0.05 };
-  const q2 = { x: -maskW * 0.4, y:  maskH * 0.05 };
-  const q3 = { x: -halfW,       y: -maskH * 0.01 };
+  const q0 = { x:  halfW,       y: maskH * 0.05 };
+  const q1 = { x:  maskW * 0.4, y: -maskH * 0.05 };
+  const q2 = { x: -maskW * 0.4, y: -maskH * 0.05 };
+  const q3 = { x: -halfW,       y: maskH * 0.01 };
 
   const pts = [];
 
@@ -220,20 +219,20 @@ function strokePolylineRGB24(buf, points, thickness) {
 }
 
 function getKP(map, name) {
-  const kp = map.find(k => k.part === name);
+  const kp = map.find(k => k.name === name);
   return kp && kp.score != null ? kp : null;
 }
 
 // ---------------- 主逻辑 ----------------
 (async () => {
-  const net = await posenet.load({
-    architecture: 'MobileNetV1',
-    outputStride: argv.outputStride,
-    inputResolution: argv.inputResolution,
-    multiplier: argv.multiplier,
-    quantBytes: argv.quantBytes,
-    modelUrl: argv.modelUrl || undefined
-  });
+  const detector = await poseDetection.createDetector(
+    poseDetection.SupportedModels.MoveNet,
+    {
+      modelType: poseDetection.movenet.modelType[argv.modelType],
+      enableSmoothing: argv.enableSmoothing,
+      enableSegmentation: argv.enableSegmentation
+    }
+  );
 
   const stdin = process.stdin;
   const stdout = process.stdout;
@@ -252,11 +251,10 @@ function getKP(map, name) {
       // [H,W,3] tensor
       const img = tf.tensor3d(new Uint8Array(frame), [H, W, 3], 'int32');
 
-      const poses = await net.estimateMultiplePoses(img, {
+      const poses = await detector.estimatePoses(img, {
         flipHorizontal: !!argv.flipHorizontal,
-        maxDetections: argv.maxDetections,
-        scoreThreshold: argv.scoreThreshold,
-        nmsRadius: argv.nmsRadius
+        maxPoses: argv.maxDetections,
+        scoreThreshold: argv.scoreThreshold
       });
       img.dispose();
 
@@ -264,13 +262,13 @@ function getKP(map, name) {
         if (!pose || pose.score < argv.minPoseConfidence) continue;
 
         const nose     = getKP(pose.keypoints, 'nose');
-        const leftEar  = getKP(pose.keypoints, 'leftEar');
-        const rightEar = getKP(pose.keypoints, 'rightEar');
+        const leftEar  = getKP(pose.keypoints, 'left_ear');
+        const rightEar = getKP(pose.keypoints, 'right_ear');
         if (!nose || !leftEar || !rightEar) continue;
         if (leftEar.score < argv.scoreThreshold || rightEar.score < argv.scoreThreshold) continue;
 
-        const lx = leftEar.position.x,  ly = leftEar.position.y;
-        const rx = rightEar.position.x, ry = rightEar.position.y;
+        const lx = leftEar.x,  ly = leftEar.y;
+        const rx = rightEar.x, ry = rightEar.y;
 
         const faceAngle = Math.atan2(ry - ly, rx - lx);
         const faceWidth = Math.hypot(rx - lx, ry - ly);
@@ -278,8 +276,8 @@ function getKP(map, name) {
         const maskW = argv.maskScaleW * faceWidth;
         const maskH = argv.maskScaleH * faceWidth;
 
-        const cx = clamp(nose.position.x, 0, W - 1);
-        const cy = clamp(nose.position.y, 0, H - 1);
+        const cx = clamp(nose.x, 0, W - 1);
+        const cy = clamp(nose.y, 0, H - 1);
 
         // 1) 构建局部 Bezier 轮廓（未旋转/未平移）
         const localPoly = buildLiquidMaskPolyline(maskW, maskH, argv.samplesPerCurve);

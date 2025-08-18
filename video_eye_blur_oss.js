@@ -1,5 +1,5 @@
 // video_eye_blur_oss.js
-// 封装：给 srcKey、dstKey（都在同一 OSS），执行 ffmpeg→node(posenet)→ffmpeg，回传 OSS。
+// 封装：给 srcKey、dstKey（都在同一 OSS），执行 ffmpeg→node(pose-detection)→ffmpeg，回传 OSS。
 // 使用示例在文件末尾。
 const OSS = require('ali-oss');
 const { spawn } = require('child_process');
@@ -7,7 +7,7 @@ const { PassThrough } = require('stream');
 const path = require('path');
 
 /**
- * 用 PoseNet 在视频中识别眼睛并打码，流式回传到 OSS
+ * 用 pose-detection 在视频中识别眼睛并打码，流式回传到 OSS
  * @param {Object} opts
  * @param {string} opts.region
  * @param {string} opts.bucket
@@ -61,7 +61,7 @@ async function maskEyesWithPoseNetOSS(opts) {
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
   ffmpegIn.stderr.on('data', collectErr('[ffmpeg-in]'));
 
-  // processor.js (PoseNet 眼睛打码)
+  // processor.js (pose-detection 眼睛打码)
   const processorPath = path.join(__dirname, 'processor.js');
   const processor = spawn('node', [
     processorPath,
@@ -138,4 +138,4 @@ async function maskEyesWithPoseNetOSS(opts) {
   return { ok: true, etag: putRes.etag, dstKey };
 }
 
-module.exports = { maskEyesWithPoseNetOSS };
+module.exports = { maskEyesWithPoseDetectionOSS };

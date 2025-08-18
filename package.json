@@ -1,0 +1,44 @@
+{
+  "name": "video-processor",
+  "version": "1.0.0",
+  "description": "视频处理器 - 基于 pose-detection 的人体姿态识别和视频处理工具",
+  "main": "processor.js",
+  "scripts": {
+    "start": "node processor.js",
+    "test": "node test-unit.js",
+    "test:basic": "node test-basic.js",
+    "test:simple": "node test-simple.js",
+    "test:video": "node test-processor.js",
+    "process": "node processor.js",
+    "blur": "node video_eye_blur_oss.js"
+  },
+  "keywords": [
+    "video",
+    "processing",
+    "pose-detection",
+    "tensorflow",
+    "pose-detection",
+    "ffmpeg",
+    "oss"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow-models/pose-detection": "^2.1.0",
+    "ali-oss": "^6.20.0",
+    "yargs": "^18.0.0"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  },
+  "homepage": ""
+}
