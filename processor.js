@@ -221,8 +221,27 @@ function downsampleRGB24Nearest(srcBuf, sw, sh, dw, dh) {
   // 上一次检测到的姿态（用于跳帧复用）
   let lastPoses = [];
 
-  stdin.on('error', () => {});
-  stdout.on('error', () => process.exit(0));
+  // 改进错误处理
+  stdin.on('error', (err) => {
+    console.error('[processor] stdin error:', err.message);
+    process.exit(1);
+  });
+  
+  stdout.on('error', (err) => {
+    console.error('[processor] stdout error:', err.message);
+    process.exit(1);
+  });
+  
+  // 处理进程信号
+  process.on('SIGTERM', () => {
+    console.log('[processor] Received SIGTERM, shutting down gracefully...');
+    process.exit(0);
+  });
+  
+  process.on('SIGINT', () => {
+    console.log('[processor] Received SIGINT, shutting down gracefully...');
+    process.exit(0);
+  });
 
   const showProgress = (currentFrame, fps) => {
     if (!argv.showProgress) return;
@@ -235,79 +254,84 @@ function downsampleRGB24Nearest(srcBuf, sw, sh, dw, dh) {
     }
   };
 
-  for await (const chunk of stdin) {
-    pending = Buffer.concat([pending, chunk]);
-    while (pending.length >= FRAME_SIZE) {
-      const frame = pending.subarray(0, FRAME_SIZE);
-      pending = pending.subarray(FRAME_SIZE);
-      frameCount++;
+  try {
+    for await (const chunk of stdin) {
+      pending = Buffer.concat([pending, chunk]);
+      while (pending.length >= FRAME_SIZE) {
+        const frame = pending.subarray(0, FRAME_SIZE);
+        pending = pending.subarray(FRAME_SIZE);
+        frameCount++;
 
-      // ★ 决定是否做“新检测”
-      const doDetect = (frameCount % Math.max(1, argv.detectEvery)) === 1;
+        // ★ 决定是否做"新检测"
+        const doDetect = (frameCount % Math.max(1, argv.detectEvery)) === 1;
 
-      if (doDetect) {
-        // ★ 仅为检测降采样，避免大分辨率进入 TF
-        const small = downsampleRGB24Nearest(frame, W, H, DW, DH);
-        const img = tf.tensor3d(small, [DH, DW, 3], 'float32'); // 与 MoveNet 预期兼容
+        if (doDetect) {
+          // ★ 仅为检测降采样，避免大分辨率进入 TF
+          const small = downsampleRGB24Nearest(frame, W, H, DW, DH);
+          const img = tf.tensor3d(small, [DH, DW, 3], 'float32'); // 与 MoveNet 预期兼容
 
-        try {
-          const poses = await detector.estimatePoses(img, {
-            flipHorizontal: !!argv.flipHorizontal,
-            maxPoses: argv.maxDetections,
-            scoreThreshold: argv.scoreThreshold
-          });
-          lastPoses = poses || [];
-          // 将坐标从降采样尺度映射回原图尺度
-          for (const p of lastPoses) {
-            if (!p || !p.keypoints) continue;
-            for (let i = 0; i < p.keypoints.length; i++) {
-              const k = p.keypoints[i];
-              k.x *= SCALE_X;
-              k.y *= SCALE_Y;
+          try {
+            const poses = await detector.estimatePoses(img, {
+              flipHorizontal: !!argv.flipHorizontal,
+              maxPoses: argv.maxDetections,
+              scoreThreshold: argv.scoreThreshold
+            });
+            lastPoses = poses || [];
+            // 将坐标从降采样尺度映射回原图尺度
+            for (const p of lastPoses) {
+              if (!p || !p.keypoints) continue;
+              for (let i = 0; i < p.keypoints.length; i++) {
+                const k = p.keypoints[i];
+                k.x *= SCALE_X;
+                k.y *= SCALE_Y;
+              }
             }
+          } finally {
+            // 关键：不在 tf.tidy 返回 Promise，改用 finally 手动释放
+            img.dispose();
           }
-        } finally {
-          // 关键：不在 tf.tidy 返回 Promise，改用 finally 手动释放
-          img.dispose();
         }
+
+        const poses = lastPoses;
+
+        // 渲染
+        for (let pi = 0; pi < poses.length; pi++) {
+          const pose = poses[pi];
+          if (!pose || pose.score < argv.minPoseConfidence) continue;
+
+          const nose     = getKP(pose.keypoints, 'nose');
+          const leftEar  = getKP(pose.keypoints, 'left_ear');
+          const rightEar = getKP(pose.keypoints, 'right_ear');
+          if (!nose || !leftEar || !rightEar) continue;
+          if (leftEar.score < argv.scoreThreshold || rightEar.score < argv.scoreThreshold) continue;
+
+          const lx = leftEar.x,  ly = leftEar.y;
+          const rx = rightEar.x, ry = rightEar.y;
+
+          const faceAngle = Math.atan2(ry - ly, rx - lx);
+          const faceWidth = Math.hypot(rx - lx, ry - ly);
+
+          const maskW = argv.maskScaleW * faceWidth;
+          const maskH = argv.maskScaleH * faceWidth;
+
+          const cx = clamp(nose.x, 0, W - 1);
+          const cy = clamp(nose.y, 0, H - 1);
+
+          const localPoly = buildLiquidMaskPolyline(maskW, maskH, argv.samplesPerCurve);
+          const poly = transformPolyline(localPoly, cx, cy, faceAngle);
+
+          fillPolygonRGB24(frame, poly);
+          strokePolylineRGB24(frame, poly, argv.strokeWidth);
+        }
+
+        showProgress(frameCount, argv.fps);
+
+        if (!stdout.write(frame)) await new Promise(res => stdout.once('drain', res));
       }
-
-      const poses = lastPoses;
-
-      // 渲染
-      for (let pi = 0; pi < poses.length; pi++) {
-        const pose = poses[pi];
-        if (!pose || pose.score < argv.minPoseConfidence) continue;
-
-        const nose     = getKP(pose.keypoints, 'nose');
-        const leftEar  = getKP(pose.keypoints, 'left_ear');
-        const rightEar = getKP(pose.keypoints, 'right_ear');
-        if (!nose || !leftEar || !rightEar) continue;
-        if (leftEar.score < argv.scoreThreshold || rightEar.score < argv.scoreThreshold) continue;
-
-        const lx = leftEar.x,  ly = leftEar.y;
-        const rx = rightEar.x, ry = rightEar.y;
-
-        const faceAngle = Math.atan2(ry - ly, rx - lx);
-        const faceWidth = Math.hypot(rx - lx, ry - ly);
-
-        const maskW = argv.maskScaleW * faceWidth;
-        const maskH = argv.maskScaleH * faceWidth;
-
-        const cx = clamp(nose.x, 0, W - 1);
-        const cy = clamp(nose.y, 0, H - 1);
-
-        const localPoly = buildLiquidMaskPolyline(maskW, maskH, argv.samplesPerCurve);
-        const poly = transformPolyline(localPoly, cx, cy, faceAngle);
-
-        fillPolygonRGB24(frame, poly);
-        strokePolylineRGB24(frame, poly, argv.strokeWidth);
-      }
-
-      showProgress(frameCount, argv.fps);
-
-      if (!stdout.write(frame)) await new Promise(res => stdout.once('drain', res));
     }
+  } catch (err) {
+    console.error('[processor] processing error:', err.message);
+    process.exit(1);
   }
 
   if (argv.showProgress) {
