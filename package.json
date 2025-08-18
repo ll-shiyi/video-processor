@@ -24,10 +24,12 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@tensorflow/tfjs": "^4.22.0",
+    "@mediapipe/pose": "^0.5.1675469404",
     "@tensorflow-models/pose-detection": "^2.1.0",
+    "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
+    "@tensorflow/tfjs-node": "^4.22.0",
     "ali-oss": "^6.20.0",
-    "yargs": "^18.0.0"
+    "yargs": "^16.0.0"
   },
   "devDependencies": {},
   "engines": {
