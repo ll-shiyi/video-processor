@@ -42,7 +42,7 @@ const argv = yargs(hideBin(process.argv))
 
   // 性能开关
   .option('detectScale', { type: 'number', default: 0.5, describe: '仅用于姿态检测的降采样比例(0.3~1.0)' })
-  .option('detectEvery', { type: 'number', default: 2, describe: '每N帧执行一次姿态检测，其余复用' })
+  .option('detectEvery', { type: 'number', default: 3, describe: '每N帧执行一次姿态检测，其余复用' })
   .option('showProgress', { type: 'boolean', default: true, description: '显示处理进度' })
   .argv;
 
@@ -294,21 +294,34 @@ function downsampleRGB24Nearest(srcBuf, sw, sh, dw, dh) {
 
         const poses = lastPoses;
 
+
+
         // 渲染
         for (let pi = 0; pi < poses.length; pi++) {
           const pose = poses[pi];
-          if (!pose || pose.score < argv.minPoseConfidence) continue;
+          if (!pose || pose.score < argv.minPoseConfidence) {
+            continue;
+          }
 
           const nose     = getKP(pose.keypoints, 'nose');
           const leftEar  = getKP(pose.keypoints, 'left_ear');
           const rightEar = getKP(pose.keypoints, 'right_ear');
-          if (!nose || !leftEar || !rightEar) continue;
-          if (leftEar.score < argv.scoreThreshold || rightEar.score < argv.scoreThreshold) continue;
+          
+          // 检查关键点是否存在
+          if (!nose || !leftEar || !rightEar) {
+            continue;
+          }
+          
+          // 检查置信度
+          if (leftEar.score < argv.scoreThreshold || rightEar.score < argv.scoreThreshold) {
+            continue;
+          }
 
           const lx = leftEar.x,  ly = leftEar.y;
           const rx = rightEar.x, ry = rightEar.y;
 
-          const faceAngle = Math.atan2(ry - ly, rx - lx);
+          // 修复面具倾斜方向：当头部向右倾斜时，面具也应该向右倾斜
+          const faceAngle = Math.atan2(ly - ry, rx - lx);
           const faceWidth = Math.hypot(rx - lx, ry - ly);
 
           const maskW = argv.maskScaleW * faceWidth;
@@ -323,6 +336,8 @@ function downsampleRGB24Nearest(srcBuf, sw, sh, dw, dh) {
           fillPolygonRGB24(frame, poly);
           strokePolylineRGB24(frame, poly, argv.strokeWidth);
         }
+
+
 
         showProgress(frameCount, argv.fps);
 
