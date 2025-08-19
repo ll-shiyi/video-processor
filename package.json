@@ -4,13 +4,10 @@
   "description": "视频处理器 - 基于 pose-detection 的人体姿态识别和视频处理工具",
   "main": "processor.js",
   "scripts": {
-    "start": "node processor.js",
-    "test": "node test-unit.js",
-    "test:basic": "node test-basic.js",
-    "test:simple": "node test-simple.js",
-    "test:video": "node test-processor.js",
-    "process": "node processor.js",
-    "blur": "node video_eye_blur_oss.js"
+    "exec:fast": "node exec.js FAST_720P",
+    "exec:ultra": "node exec.js ULTRA_FAST",
+    "exec:standard": "node exec.js STANDARD",
+    "exec:quality": "node exec.js HIGH_QUALITY"
   },
   "keywords": [
     "video",
