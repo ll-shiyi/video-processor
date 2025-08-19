@@ -319,10 +319,15 @@ function downsampleRGB24Nearest(srcBuf, sw, sh, dw, dh) {
 
           const lx = leftEar.x,  ly = leftEar.y;
           const rx = rightEar.x, ry = rightEar.y;
+          const nx = nose.x,     ny = nose.y;
 
           // 修复面具倾斜方向：当头部向右倾斜时，面具也应该向右倾斜
           const faceAngle = Math.atan2(ly - ry, rx - lx);
-          const faceWidth = Math.hypot(rx - lx, ry - ly);
+          
+          // 改进面部尺寸计算：使用鼻子到耳朵的平均距离，避免侧面时面罩过小
+          const leftDist = Math.hypot(nx - lx, ny - ly);
+          const rightDist = Math.hypot(nx - rx, ny - ry);
+          const faceWidth = Math.max(leftDist, rightDist) * 2; // 乘以2作为面部宽度估计
 
           const maskW = argv.maskScaleW * faceWidth;
           const maskH = argv.maskScaleH * faceWidth;
