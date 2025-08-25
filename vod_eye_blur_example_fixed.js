@@ -32,9 +32,9 @@ const argv = yargs(hideBin(process.argv))
   .option('outputTitle', { type: 'string', default: '隐私保护处理后的视频（修复版）', describe: '输出视频标题' })
   .option('outputDescription', { type: 'string', default: '使用 MoveNet 进行眼部遮挡处理（方案A：不缩放，仅 setsar=1）', describe: '输出视频描述' })
 
-  // 尺寸/帧率/质量（width/height 可留空，内部自动探测；fps 也可留空用源fps）
-  .option('width', { type: 'number', describe: '处理尺寸宽（偶数）。缺省=自动探测源宽' })
-  .option('height', { type: 'number', describe: '处理尺寸高（偶数）。缺省=自动探测源高' })
+  // 尺寸/帧率/质量（width/height 可留空，内部自动探测720p优先；fps 也可留空用源fps）
+  .option('width', { type: 'number', describe: '处理尺寸宽（偶数）。缺省=自动探测源宽，优先720p' })
+  .option('height', { type: 'number', describe: '处理尺寸高（偶数）。缺省=自动探测源高，优先720p' })
   .option('fps', { type: 'number', describe: '输出帧率（缺省=自动取源fps的近似值）' })
   .option('crf', { type: 'number', default: 23, describe: 'x264 CRF（质量/码率权衡）' })
   .option('timeout', { type: 'number', default: 300000, describe: '上传超时时间（毫秒）' })

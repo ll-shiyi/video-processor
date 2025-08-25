@@ -10,18 +10,18 @@ async function main() {
   // 配置参数
   const config = {
     // VOD 配置
-    accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xxx',
-    accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xxxx',
+    accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xx',
+    accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xxx',
     region: 'cn-shanghai',
     
     // 视频信息
-    videoId: '502e4b99816071f0800e4531858c0102', // 源视频ID
+    videoId: 'c09f564080ff71f0bfc64531959c0102', // 源视频ID
     outputTitle: '隐私保护处理后的视频',
     outputDescription: '使用MoveNet进行眼部遮挡处理的视频',
     
-    // 视频处理参数 - 针对手机视频优化
-    width: 1080,  // 手机视频常用宽度，保持宽高比
-    height: 1920, // 手机视频常用高度，保持宽高比
+    // 视频处理参数 - 720p清晰度
+    width: 1280,  // 720p宽度（16:9比例）
+    height: 720,  // 720p高度
     fps: 30,      // 手机视频通常30fps
     crf: 20,      // 提高质量，减少压缩伪影
     
@@ -48,7 +48,7 @@ async function main() {
     console.log('配置参数:', JSON.stringify(config, null, 2));
     
     const result = await maskEyesWithPoseNetVOD(config);
-    
+    console.log('结果:', JSON.stringify(result));
     if (result.success) {
       console.log('✅ 视频处理成功！');
       console.log(`📹 输出视频ID: ${result.outputVideoId}`);
@@ -92,8 +92,8 @@ const argv = yargs(hideBin(process.argv))
   .option('videoId', { type: 'string', description: '源视频ID' })
   .option('outputTitle', { type: 'string', description: '输出视频标题' })
   .option('outputDescription', { type: 'string', description: '输出视频描述' })
-  .option('width', { type: 'number', default: 1080, description: '视频宽度（必须为偶数）' })
-  .option('height', { type: 'number', default: 1920, description: '视频高度（必须为偶数）' })
+  .option('width', { type: 'number', default: 1280, description: '视频宽度（必须为偶数，默认720p）' })
+  .option('height', { type: 'number', default: 720, description: '视频高度（必须为偶数，默认720p）' })
   .option('fps', { type: 'number', default: 30, description: '视频帧率' })
   .option('crf', { type: 'number', default: 20, description: '视频质量参数' })
   .option('minScore', { type: 'number', default: 0.15, description: '置信度阈值' })

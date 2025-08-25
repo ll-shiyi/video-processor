@@ -138,7 +138,7 @@ async function maskEyesWithPoseNetVOD(opts) {
   };
 
   try {
-    // 1) 选定播放清晰度：优先 Original/Source，其次分辨率最大
+    // 1) 选定播放清晰度：优先720p，其次 Original/Source，最后分辨率最大
     console.log(`[VOD] 获取视频播放信息: ${videoId}`);
     let playUrl = null, playWidth = null, playHeight = null;
 
@@ -153,10 +153,17 @@ async function maskEyesWithPoseNetVOD(opts) {
         ...p,
         _w: (p.width && +p.width) || null,
         _h: (p.height && +p.height) || null,
-        _isOriginal: /original|source/i.test(String(p.definition || '')) || /source/i.test(String(p.streamType || ''))
+        _isOriginal: /original|source/i.test(String(p.definition || '')) || /source/i.test(String(p.streamType || '')),
+        _is720p: (p.width && +p.width === 1280 && p.height && +p.height === 720) || 
+                 (p.width && +p.width === 720 && p.height && +p.height === 1280) ||
+                 /720p|720/i.test(String(p.definition || ''))
       }));
 
-      let pick = enriched.find(p => p._isOriginal && p.playURL && p._w && p._h);
+      // 优先选择720p清晰度，其次Original/Source，最后分辨率最大
+      let pick = enriched.find(p => p._is720p && p.playURL && p._w && p._h);
+      if (!pick) {
+        pick = enriched.find(p => p._isOriginal && p.playURL && p._w && p._h);
+      }
       if (!pick) {
         enriched.sort((a, b) => ((b._w || 0) * (b._h || 0)) - ((a._w || 0) * (a._h || 0)));
         pick = enriched.find(p => p.playURL && p._w && p._h) || enriched[0];
