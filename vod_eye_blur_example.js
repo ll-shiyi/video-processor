@@ -10,12 +10,12 @@ async function main() {
   // 配置参数
   const config = {
     // VOD 配置
-    accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xx',
+    accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xxx',
     accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xxx',
     region: 'cn-shanghai',
     
     // 视频信息
-    videoId: 'c09f564080ff71f0bfc64531959c0102', // 源视频ID
+    videoId: '5048ff30818771f0806f6733a78e0102', // 源视频ID
     outputTitle: '隐私保护处理后的视频',
     outputDescription: '使用MoveNet进行眼部遮挡处理的视频',
     

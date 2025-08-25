@@ -325,27 +325,27 @@ async function maskEyesWithPoseNetVOD(opts) {
     console.log(`[FILE] 输出文件大小: ${stat.size} 字节`);
     if (stat.size === 0) throw new Error('输出文件为空');
 
-    // 上传 VOD
+    // 上传 VOD（使用分片上传）
     console.log('[VOD] 准备上传处理后的视频…');
-    const uploadRequest = new CreateUploadVideoRequest({
+    const uploadResult = await uploader.uploadToVod(tmpFile, vodClient, {
       title: outputTitle,
       description: outputDescription || `处理后的视频 - 源视频ID: ${videoId}`,
       fileName: `processed_${videoId}_${Date.now()}.mp4`,
       fileSize: stat.size,
       cateId: 0,
       tags: 'privacy-protected,eye-blur',
+      // 分片上传配置
+      partSize: 1024 * 1024, // 1MB分片
+      parallel: 3, // 3个并发
+      maxRetries: 3, // 最大重试3次
+      timeout: timeout, // 使用传入的timeout
+      onProgress: (progress, info) => {
+        const percent = (progress * 100).toFixed(2);
+        console.log(`[UPLOAD] 上传进度: ${percent}% (${info.uploadedBytes}/${info.fileSize} bytes)`);
+      }
     });
-    const uploadResponse = await vodClient.createUploadVideo(uploadRequest);
-    const uploadInfo = uploadResponse.body;
-    console.log(`[VOD] 获取上传凭证成功，输出视频ID: ${uploadInfo.videoId}`);
-
-    const ossConfig = uploader.parseUploadInfo(uploadInfo.uploadAddress, uploadInfo.uploadAuth);
-    console.log('[VOD] 解析上传信息成功');
-
-    const ossClient = uploader.createOssClient(ossConfig);
-    console.log('[VOD] 开始上传文件…');
-    await uploader.uploadToOss(ossClient, tmpFile, ossConfig.objectKey, { timeout });
-    console.log('[VOD] 文件上传成功');
+    
+    console.log('[VOD] 文件上传成功，视频ID:', uploadResult.videoId);
 
     try { fs.unlinkSync(tmpFile); console.log('[FILE] 已删除临时文件:', tmpFile); } catch (e) {
       console.warn('[FILE] 删除临时文件失败:', e.message);
@@ -355,7 +355,7 @@ async function maskEyesWithPoseNetVOD(opts) {
     const endTimeISO = new Date().toISOString();
     const successResult = {
       success: true,
-      outputVideoId: uploadInfo.videoId,
+      outputVideoId: uploadResult.videoId,
       startTime: startTimeISO,
       endTime: endTimeISO,
       processingTime: endTime - startTime,
