@@ -10,6 +10,13 @@
  *  - 手动 dispose()，不在 tf.tidy 中返回 Promise（修复 Cannot return a Promise inside of tidy）
  */
 
+// 抑制 Node.js 弃用警告
+process.env.NODE_NO_WARNINGS = '1';
+// 设置 --no-deprecation 标志来抑制弃用警告
+if (!process.argv.includes('--no-deprecation')) {
+  process.argv.unshift('--no-deprecation');
+}
+
 const tf = require('@tensorflow/tfjs-node'); // ★ 原生后端：显著加速（CPU/GPU二进制）
 const poseDetection = require('@tensorflow-models/pose-detection');
 const yargs = require('yargs');

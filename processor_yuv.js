@@ -7,6 +7,12 @@
 process.env.TF_CPP_MIN_LOG_LEVEL = '2';
 process.env.TENSORFLOW_NUM_INTRAOP_THREADS = process.env.TENSORFLOW_NUM_INTRAOP_THREADS || '4';
 process.env.TENSORFLOW_NUM_INTEROP_THREADS = process.env.TENSORFLOW_NUM_INTEROP_THREADS || '2';
+// 抑制 Node.js 弃用警告
+process.env.NODE_NO_WARNINGS = '1';
+// 设置 --no-deprecation 标志来抑制弃用警告
+if (!process.argv.includes('--no-deprecation')) {
+  process.argv.unshift('--no-deprecation');
+}
 
 const tf = require('@tensorflow/tfjs-node');
 const poseDetection = require('@tensorflow-models/pose-detection');
