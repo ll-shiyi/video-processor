@@ -9,7 +9,6 @@ process.env.TENSORFLOW_NUM_INTRAOP_THREADS = process.env.TENSORFLOW_NUM_INTRAOP_
 process.env.TENSORFLOW_NUM_INTEROP_THREADS = process.env.TENSORFLOW_NUM_INTEROP_THREADS || '2';
 // 抑制 Node.js 弃用警告
 process.env.NODE_NO_WARNINGS = '1';
-// 设置 --no-deprecation 标志来抑制弃用警告
 if (!process.argv.includes('--no-deprecation')) {
   process.argv.unshift('--no-deprecation');
 }
@@ -22,8 +21,8 @@ const fs = require('fs');
 const path = require('path');
 
 const argv = yargs(hideBin(process.argv))
-  .option('width', { type: 'number', default: 1280 })
-  .option('height', { type: 'number', default: 720 })
+  .option('width', { type: 'number', demandOption: true })   // 由外部 ffprobe 传入
+  .option('height', { type: 'number', demandOption: true })  // 由外部 ffprobe 传入
   .option('fps', { type: 'number', default: 25 })
   .option('modelType', { type: 'string', default: 'SINGLEPOSE_LIGHTNING' })
   .option('enableSmoothing', { type: 'boolean', default: true })
@@ -135,23 +134,18 @@ function clipPolygonAbove(points, yLimit) {
     const prevIn = prev.y <= yLimit;
 
     if (prevIn && currIn) {
-      // in → in：保留当前点
       out.push(curr);
     } else if (prevIn && !currIn) {
-      // in → out：加入交点
       const t = (yLimit - prev.y) / (curr.y - prev.y);
       const x = prev.x + t * (curr.x - prev.x);
       out.push({ x, y: yLimit });
     } else if (!prevIn && currIn) {
-      // out → in：加入交点 + 当前点
       const t = (yLimit - prev.y) / (curr.y - prev.y);
       const x = prev.x + t * (curr.x - prev.x);
       out.push({ x, y: yLimit });
       out.push(curr);
     }
-    // out → out：无输出
   }
-  // 可能退化成线/点，调用侧会跳过
   return out;
 }
 
@@ -173,7 +167,6 @@ const DS_INDEX = (() => {
 const DS_BUF_RGB = new Float32Array(DW * DH * 3); // 灰度复制到 3 通道
 
 function downsampleY_toRGB(sY) {
-  // 将 Y 值复制到 R/G/B 三通道
   for (let i = 0, j = 0; i < DS_INDEX.length; i++) {
     const yv = sY[DS_INDEX[i]];
     DS_BUF_RGB[j++] = yv;
@@ -206,7 +199,7 @@ function fillPolygonY(bufY, points, width, height) {
       XS_BUF[k++] = a.x + t * (b.x - a.x);
     }
     if (k < 2) continue;
-    // 插入排序 (k 很小)
+    // 插入排序
     for (let i = 1; i < k; i++) {
       const v = XS_BUF[i]; let j = i - 1;
       while (j >= 0 && XS_BUF[j] > v) { XS_BUF[j + 1] = XS_BUF[j]; j--; }
@@ -384,6 +377,9 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
                 const k = p.keypoints[i];
                 k.x *= SCALE_X;
                 k.y *= SCALE_Y;
+                // 限幅，避免越界
+                if (k.x < 0) k.x = 0; else if (k.x > W - 1) k.x = W - 1;
+                if (k.y < 0) k.y = 0; else if (k.y > H - 1) k.y = H - 1;
               }
             }
           } finally {
@@ -422,21 +418,16 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
           const localPoly = buildBeautyMaskPolyline(
             maskW,
             maskH,
-            Math.max(24, argv.samplesPerCurve) // 最少 24 点更顺滑
+            Math.max(24, argv.samplesPerCurve)
           );
           const polyAll = transformPolyline(localPoly, cx, cy, faceAngle);
 
-          // ★ 仅遮罩“鼻子以上” → 裁剪半平面 y <= nose.y
-          const poly = clipPolygonAbove(polyAll, ny+10);
-          if (poly.length < 3) continue; // 被裁空/退化则跳过
+          // ★ 仅遮罩“鼻子以上” → 裁剪半平面 y <= nose.y + 10
+          const poly = clipPolygonAbove(polyAll, ny + 10);
+          if (poly.length < 3) continue;
 
           // 填充到 Y；描边可选；UV=128
-          if (wasm && wasm.fillY) {
-            // 如果你实现了 WASM 版，可在此切换到 wasm 调用；默认使用 JS 版：
-            fillPolygonY(yPlane, poly, W, H);
-          } else {
-            fillPolygonY(yPlane, poly, W, H);
-          }
+          fillPolygonY(yPlane, poly, W, H);
           if (argv.strokeWidth > 0) {
             strokePolylineY(yPlane, poly, argv.strokeWidth, W, H);
           }
