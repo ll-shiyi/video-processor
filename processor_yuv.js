@@ -286,13 +286,18 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
 
 // ---------------- 主逻辑 ----------------
 (async () => {
+  // 设置本地模型路径
+  const modelPath = path.resolve(__dirname, 'models/movenet-tfjs-singlepose-lightning-v4/model.json');
+  console.error(`[processor] 使用本地模型: ${modelPath}`);
+  
   const detector = await poseDetection.createDetector(
     poseDetection.SupportedModels.MoveNet,
     {
       modelType: poseDetection.movenet.modelType[argv.modelType],
       enableSmoothing: argv.enableSmoothing,
       enableSegmentation: false,
-      maxPoses: argv.maxDetections
+      maxPoses: argv.maxDetections,
+      modelUrl: `file://${modelPath}`
     }
   );
 
