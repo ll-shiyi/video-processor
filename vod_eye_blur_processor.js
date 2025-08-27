@@ -17,7 +17,7 @@ function ensureEven(v) {
 }
 
 function probe(input) {
-  const cmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,sample_aspect_ratio,r_frame_rate -of json "${input}"`;
+  const cmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,sample_aspect_ratio,r_frame_rate,duration -of json "${input}"`;
   const out = execSync(cmd, { encoding: 'utf8' });
   const info = JSON.parse(out).streams?.[0];
   if (!info) throw new Error('ffprobe: no video stream');
@@ -30,7 +30,8 @@ function probe(input) {
     const [a, b] = fpsStr.split('/').map(Number);
     if (a > 0 && b > 0) fps = Math.round((a / b) * 1000) / 1000;
   } catch {}
-  return { width: w, height: h, sar, fps };
+  const duration = parseFloat(info.duration) || 0;
+  return { width: w, height: h, sar, fps, duration };
 }
 
 function spawnFFmpeg(args, stdio = ['pipe', 'pipe', 'pipe']) {
@@ -215,6 +216,7 @@ async function maskEyesWithPoseNetVOD(opts) {
       '-fflags', '+genpts',
       '-i', playUrl,
       '-vf', vfIn,
+      '-r', String(FPS),
       '-pix_fmt', 'yuv420p',
       '-f', 'rawvideo',
       '-y',

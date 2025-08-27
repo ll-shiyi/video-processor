@@ -10,19 +10,21 @@ async function main() {
   // 配置参数
   const config = {
     // VOD 配置
-    accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xxx',
-    accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xxx',
-    region: 'cn-shanghai',
+     // VOD 配置
+     accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xxx',
+     accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xxx',
+     region: 'cn-shanghai',
+     
     
-    // 视频信息
-    videoId: '5048ff30818771f0806f6733a78e0102', // 源视频ID
+    // 源视频ID
+    videoId: '90f6532082f471f0bffa4531958c0102', 
     outputTitle: '隐私保护处理后的视频',
     outputDescription: '使用MoveNet进行眼部遮挡处理的视频',
     
     // 视频处理参数 - 720p清晰度
-    width: 1280,  // 720p宽度（16:9比例）
-    height: 720,  // 720p高度
-    fps: 30,      // 手机视频通常30fps
+    // width: 1280,  // 720p宽度（16:9比例）
+    // height: 720,  // 720p高度
+    // fps: 30,      // 手机视频通常30fps
     crf: 20,      // 提高质量，减少压缩伪影
     
     // 姿态检测参数 - 针对手机视频优化
