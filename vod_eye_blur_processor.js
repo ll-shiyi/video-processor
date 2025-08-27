@@ -186,22 +186,29 @@ async function maskEyesWithPoseNetVOD(opts) {
     // 2) 计算目标尺寸（偶数化）+ 原始 SAR + FPS
     const metaProbe = probe(playUrl);
     const origSAR = (metaProbe.sar && metaProbe.sar !== '0:1') ? metaProbe.sar : '1:1';
-    const SRC_W = ensureEven(optWidth  ?? playWidth  ?? metaProbe.width);
-    const SRC_H = ensureEven(optHeight ?? playHeight ?? metaProbe.height);
+    
+    // 优先使用原始视频尺寸，如果指定了尺寸则使用指定尺寸
+    const SRC_W = ensureEven(optWidth  ?? metaProbe.width);
+    const SRC_H = ensureEven(optHeight ?? metaProbe.height);
     const FPS   = (optFps && +optFps > 0) ? +optFps : (Math.round(metaProbe.fps) || 25);
 
     console.log('[META]');
+    console.log(`  - 原始视频尺寸: ${metaProbe.width}x${metaProbe.height}`);
     console.log(`  - 目标帧尺寸（偶数化）: ${SRC_W}x${SRC_H}`);
     console.log(`  - 原始 SAR: ${origSAR}`);
     console.log(`  - 输出 FPS: ${FPS}`);
 
-    // 3) ffmpeg-in：等比例缩放 + 居中补边（保黑边、绝不拉伸）→ 统一成固定尺寸；并把像素 SAR 归一到1，便于处理
-    //    这样传给处理器的每帧几何与显示一致，人脸不会被横向拉宽
+    // 3) ffmpeg-in：保持原始尺寸，不进行缩放和补边，只确保尺寸为偶数
+    //    如果目标尺寸与原始尺寸不同，则进行简单缩放，不添加黑边
     console.log('[FFMPEG-IN] 启动…');
-    const vfIn =
-      `scale=${SRC_W}:${SRC_H}:flags=bicubic:force_original_aspect_ratio=decrease,` + // 等比例缩放
-      `pad=${SRC_W}:${SRC_H}:(ow-iw)/2:(oh-ih)/2,` +                                 // 居中补边（保留两侧黑边）
-      `setsar=1`;                                                                    // 处理阶段使用方形像素
+    let vfIn;
+    if (SRC_W === metaProbe.width && SRC_H === metaProbe.height) {
+      // 尺寸相同，直接使用原始尺寸
+      vfIn = `setsar=1`; // 只设置方形像素，不进行任何缩放
+    } else {
+      // 尺寸不同，进行缩放但不添加黑边
+      vfIn = `scale=${SRC_W}:${SRC_H}:flags=bicubic,setsar=1`;
+    }
     const ffmpegInArgs = [
       '-hide_banner', '-loglevel', 'error',
       '-threads', '4',
