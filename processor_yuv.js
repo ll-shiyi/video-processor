@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-/* processor_yuv.js — YUV420P 管线 + MoveNet；仅遮罩鼻子以上区域
+/* processor_yuv.js — YUV420P 管线 + MoveNet；“液态面具”形状 1:1 复刻（按前端 drawLiquidMask）
+ * 每帧检测模式：使用原始视频尺寸，每帧都进行人脸检测和遮挡绘制
  * stdin : rawvideo (yuv420p)
  * stdout: rawvideo (yuv420p)
  */
@@ -19,6 +20,7 @@ const yargs = require('yargs');
 const { hideBin } = require('yargs/helpers');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const argv = yargs(hideBin(process.argv))
   .option('width', { type: 'number', demandOption: true })   // 由外部 ffprobe 传入
@@ -30,14 +32,24 @@ const argv = yargs(hideBin(process.argv))
   .option('scoreThreshold', { type: 'number', default: 0.2 })
   .option('minPoseConfidence', { type: 'number', default: 0.15 })
   .option('flipHorizontal', { type: 'boolean', default: false })
-  .option('maskScaleW', { type: 'number', default: 1.3 })
-  .option('maskScaleH', { type: 'number', default: 1.8 })
-  .option('samplesPerCurve', { type: 'number', default: 28 }) // 建议 28~56
-  .option('strokeWidth', { type: 'number', default: 1 })     // Y 平面描边像素粗细
-  .option('detectScale', { type: 'number', default: 0.3 })
-  .option('detectEvery', { type: 'number', default: 5 })
-  .option('adaptiveSkip', { type: 'boolean', default: true })
-  .option('showProgress', { type: 'boolean', default: true })
+
+  // —— 关键：与前端一致的尺寸系数 ——
+  .option('maskScaleW', { type: 'number', default: 1.3 }) // faceWidth * 1.3
+  .option('maskScaleH', { type: 'number', default: 1.8 }) // faceWidth * 1.8
+
+  // 采样密度：每条贝塞尔曲线的采样点数（建议：28~56）
+  .option('samplesPerCurve', { type: 'number', default: 32 })
+
+  // 线条粗细（像素），用于“白色描边”
+  .option('strokeWidth', { type: 'number', default: 2 })
+
+  // 检测控制
+  .option('showProgress', { type: 'boolean', default: false })
+  
+  // 保存未检测到人脸的帧
+  .option('saveNoFaceFrames', { type: 'boolean', default: false })
+  .option('noFaceFramesDir', { type: 'string', default: './no_face_frames' })
+  .option('saveEveryNFrames', { type: 'number', default: 1, description: '每N帧保存一次（避免保存过多）' })
   .argv;
 
 const W = argv.width | 0, H = argv.height | 0;
@@ -52,10 +64,11 @@ const FRAME_U = W2 * H2;
 const FRAME_V = FRAME_U;
 const FRAME_SIZE = FRAME_Y + FRAME_U + FRAME_V;
 
-const DW = Math.max(64, Math.round(W * argv.detectScale));
-const DH = Math.max(64, Math.round(H * argv.detectScale));
-const SCALE_X = W / DW;
-const SCALE_Y = H / DH;
+// 使用原始视频尺寸进行检测，不进行降采样
+const DW = W;
+const DH = H;
+const SCALE_X = 1.0;
+const SCALE_Y = 1.0;
 
 // ---------------- WASM (可选) ----------------
 let wasm = null;
@@ -76,39 +89,144 @@ let wasm = null;
 // ---------------- 工具函数 ----------------
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-// “超椭圆”美化面具（更像脸型，额头略收、下巴更饱满）
-function buildBeautyMaskPolyline(maskW, maskH, samples, nTop = 3.0, nBot = 2.2) {
-  const a = maskW / 2;
-  const b = maskH / 2;
-  const pts = new Array(samples);
-  const TWO_PI = Math.PI * 2;
-
-  for (let i = 0; i < samples; i++) {
-    const t = (i / samples) * TWO_PI; // 0..2π
-    const c = Math.cos(t);
-    const s = Math.sin(t);
-
-    const n = (s >= 0) ? nBot : nTop; // s>=0 为下巴区；s<0 为额头区
-    const pow = 2 / n;
-
-    let x = a * Math.sign(c) * Math.pow(Math.abs(c), pow);
-    let y = b * Math.sign(s) * Math.pow(Math.abs(s), pow);
-
-    if (s < 0) { x *= 0.92; y *= 0.96; } // 额头收窄
-    else      { y *= 1.06; }            // 下巴更饱满（但稍后我们会裁掉鼻子以下）
-    pts[i] = { x, y };
+// 创建输出目录
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+    console.error(`[SAVE] 创建目录: ${dirPath}`);
   }
+}
+
+// 将YUV帧保存为PNG图片
+function saveYUVFrameAsPNG(yPlane, uPlane, vPlane, width, height, outputPath) {
+  return new Promise((resolve, reject) => {
+    // 使用ffmpeg将YUV420P转换为PNG
+    const ffmpeg = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'rawvideo',
+      '-pixel_format', 'yuv420p',
+      '-video_size', `${width}x${height}`,
+      '-framerate', '1',
+      '-i', 'pipe:0',
+      '-frames:v', '1',
+      '-y',
+      outputPath
+    ], { stdio: ['pipe', 'ignore', 'pipe'] });
+
+    // 将YUV数据写入ffmpeg
+    const yuvBuffer = Buffer.concat([
+      Buffer.from(yPlane),
+      Buffer.from(uPlane),
+      Buffer.from(vPlane)
+    ]);
+    
+    ffmpeg.stdin.write(yuvBuffer);
+    ffmpeg.stdin.end();
+
+    let errorOutput = '';
+    ffmpeg.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`ffmpeg failed with code ${code}: ${errorOutput}`));
+      }
+    });
+
+    ffmpeg.on('error', (err) => {
+      reject(err);
+    });
+  });
+}
+
+// ---- 贝塞尔辅助：三次贝塞尔采样 ----
+function cubicBezier(p0, p1, p2, p3, t) {
+  const it = 1 - t;
+  const it2 = it * it;
+  const t2 = t * t;
+  const a = it2 * it;      // (1-t)^3
+  const b = 3 * it2 * t;   // 3(1-t)^2 t
+  const c = 3 * it * t2;   // 3(1-t) t^2
+  const d = t * t2;        // t^3
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+  };
+}
+
+// ---- 形状构造：与前端 drawLiquidMask 完全一致（局部坐标，原点在鼻尖，已旋转前）----
+function buildLiquidMaskPolyline(maskW, maskH, samplesPerCurve) {
+  // 前端路径：
+  // moveTo(-maskW/2, -maskH*0.2)
+  // bezierCurveTo(-maskW*0.4, -maskH*0.6,  maskW*0.4, -maskH*0.6,  maskW/2, -maskH*0.2)
+  // lineTo(maskW/2, -maskH*0.05)
+  // bezierCurveTo( maskW*0.4,  maskH*0.05, -maskW*0.4,  maskH*0.05, -maskW/2, -maskH*0.01)
+  // closePath()
+
+  const P0 = { x: -maskW / 2, y: -maskH * 0.2 };
+  const C1 = { x: -maskW * 0.4, y: -maskH * 0.6 };
+  const C2 = { x:  maskW * 0.4, y: -maskH * 0.6 };
+  const P3 = { x:  maskW / 2,   y: -maskH * 0.2 };
+
+  const L1 = { x:  maskW / 2,   y: -maskH * 0.05 };
+
+  const C3 = { x:  maskW * 0.4, y:  maskH * 0.05 };
+  const C4 = { x: -maskW * 0.4, y:  maskH * 0.05 };
+  const P7 = { x: -maskW / 2,   y: -maskH * 0.01 };
+
+  const pts = [];
+
+  // Segment 1: P0 -> P3 (cubic)
+  for (let i = 0; i <= samplesPerCurve; i++) {
+    const t = i / samplesPerCurve;
+    pts.push(cubicBezier(P0, C1, C2, P3, t));
+  }
+
+  // Segment 2: line P3 -> L1
+  const LINE_SAMPLES = 2;
+  for (let i = 1; i <= LINE_SAMPLES; i++) {
+    const t = i / LINE_SAMPLES;
+    pts.push({
+      x: P3.x + t * (L1.x - P3.x),
+      y: P3.y + t * (L1.y - P3.y),
+    });
+  }
+
+  // Segment 3: L1 -> P7 (cubic)
+  for (let i = 1; i <= samplesPerCurve; i++) {
+    const t = i / samplesPerCurve;
+    pts.push(cubicBezier(L1, C3, C4, P7, t));
+  }
+
+  // closePath: P7 -> P0
+  const CLOSE_SAMPLES = 2;
+  for (let i = 1; i <= CLOSE_SAMPLES; i++) {
+    const t = i / CLOSE_SAMPLES;
+    pts.push({
+      x: P7.x + t * (P0.x - P7.x),
+      y: P7.y + t * (P0.y - P7.y),
+    });
+  }
+
   return pts;
 }
 
+// 旋转 + 平移到图像坐标（以鼻尖为中心、按脸角旋转）
+// ★ 与 Canvas 2D 的 rotate(angle) 完全一致：
+//   x' = x * cosθ - y * sinθ
+//   y' = x * sinθ + y * cosθ
 function transformPolyline(points, cx, cy, angle) {
   const cosT = Math.cos(angle), sinT = Math.sin(angle);
   const out = new Array(points.length);
   for (let i = 0; i < points.length; i++) {
     const { x, y } = points[i];
-    const xr =  x *  cosT + y * sinT;
-    const yr = -x *  sinT + y * cosT;
+    const xr =  x * cosT - y * sinT;
+    const yr =  x * sinT + y * cosT;
     out[i] = { x: xr + cx, y: yr + cy };
+    // out[i] = { x: xr + cx, y: cy - yr };
   }
   return out;
 }
@@ -121,62 +239,21 @@ function getKP(map, name) {
   return null;
 }
 
-// ---- 多边形裁剪：仅保留 y <= yLimit 的部分（Sutherland–Hodgman 针对单条水平半平面）----
-function clipPolygonAbove(points, yLimit) {
-  // “鼻子以上” → 图像坐标 y 向下为正，因此保留 y <= yLimit
-  const n = points.length;
-  if (n < 3) return [];
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const curr = points[i];
-    const prev = points[(i + n - 1) % n];
-    const currIn = curr.y <= yLimit;
-    const prevIn = prev.y <= yLimit;
+// ---------------- 原始尺寸处理 ----------------
+const RGB_BUF = new Float32Array(W * H * 3); // 原始尺寸的RGB缓冲区
 
-    if (prevIn && currIn) {
-      out.push(curr);
-    } else if (prevIn && !currIn) {
-      const t = (yLimit - prev.y) / (curr.y - prev.y);
-      const x = prev.x + t * (curr.x - prev.x);
-      out.push({ x, y: yLimit });
-    } else if (!prevIn && currIn) {
-      const t = (yLimit - prev.y) / (curr.y - prev.y);
-      const x = prev.x + t * (curr.x - prev.x);
-      out.push({ x, y: yLimit });
-      out.push(curr);
-    }
+function yPlaneToRGB(sY) {
+  // 直接将Y平面转换为RGB格式，不进行降采样
+  for (let i = 0, j = 0; i < W * H; i++) {
+    const yv = sY[i];
+    RGB_BUF[j++] = yv;
+    RGB_BUF[j++] = yv;
+    RGB_BUF[j++] = yv;
   }
-  return out;
+  return RGB_BUF;
 }
 
-// ---------------- 预计算：降采样索引（从 Y 平面降采样，灰度 → 3 通道） ----------------
-const DS_INDEX = (() => {
-  const sxStep = W / DW, syStep = H / DH;
-  const arr = new Int32Array(DW * DH);
-  let o = 0;
-  for (let y = 0; y < DH; y++) {
-    const sy = Math.min(H - 1, (y * syStep) | 0);
-    let row = sy * W; // Y 平面 1 字节/像素
-    for (let x = 0; x < DW; x++) {
-      const sx = Math.min(W - 1, (x * sxStep) | 0);
-      arr[o++] = row + sx;
-    }
-  }
-  return arr;
-})();
-const DS_BUF_RGB = new Float32Array(DW * DH * 3); // 灰度复制到 3 通道
-
-function downsampleY_toRGB(sY) {
-  for (let i = 0, j = 0; i < DS_INDEX.length; i++) {
-    const yv = sY[DS_INDEX[i]];
-    DS_BUF_RGB[j++] = yv;
-    DS_BUF_RGB[j++] = yv;
-    DS_BUF_RGB[j++] = yv;
-  }
-  return DS_BUF_RGB;
-}
-
-// ---------------- 扫描线填充/描边（JS 版，若无 WASM） ----------------
+// ---------------- 扫描线填充（Y） ----------------
 const XS_BUF = new Float32Array(64);
 
 function fillPolygonY(bufY, points, width, height) {
@@ -210,40 +287,9 @@ function fillPolygonY(bufY, points, width, height) {
       if (x0 > x1) { const tmp = x0; x0 = x1; x1 = tmp; }
       x0 = clamp(x0, 0, width - 1);
       x1 = clamp(x1, 0, width - 1);
+      // 填充为“黑色”：Y=0
       bufY.fill(0, y * width + x0, y * width + x1 + 1);
     }
-  }
-}
-
-function strokePolylineY(bufY, points, thickness, width, height) {
-  if (points.length < 2 || thickness <= 0) return;
-  const r = Math.max(1, thickness / 2), r2 = r * r;
-  const drawSeg = (x0, y0, x1, y1) => {
-    const dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
-    const minX = clamp(Math.floor(Math.min(x0, x1) - r - 1), 0, width - 1);
-    const maxX = clamp(Math.ceil (Math.max(x0, x1) + r + 1), 0, width - 1);
-    const minY = clamp(Math.floor(Math.min(y0, y1) - r - 1), 0, height - 1);
-    const maxY = clamp(Math.ceil (Math.max(y0, y1) + r + 1), 0, height - 1);
-    for (let y = minY; y <= maxY; y++) {
-      const py = y + 0.5;
-      for (let x = minX; x <= maxX; x++) {
-        const px = x + 0.5;
-        let t = 0;
-        if (len2 > 0) {
-          t = ((px - x0) * dx + (py - y0) * dy) / len2;
-          if (t < 0) t = 0; else if (t > 1) t = 1;
-        }
-        const cx = x0 + t * dx, cy = y0 + t * dy;
-        const ddx = px - cx, ddy = py - cy;
-        if (ddx * ddx + ddy * ddy <= r2) {
-          bufY[y * width + x] = 0;
-        }
-      }
-    }
-  };
-  for (let i = 0; i < points.length; i++) {
-    const a = points[i], b = points[(i + 1) % points.length];
-    drawSeg(a.x, a.y, b.x, b.y);
   }
 }
 
@@ -278,17 +324,95 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
       if (x0 > x1) { const tmp = x0; x0 = x1; x1 = tmp; }
       x0 = clamp(x0, 0, width2 - 1);
       x1 = clamp(x1, 0, width2 - 1);
+      // YUV 的“黑/白”都用中性色度：U=V=128
       bufU.fill(128, y * width2 + x0, y * width2 + x1 + 1);
       bufV.fill(128, y * width2 + x0, y * width2 + x1 + 1);
     }
   }
 }
 
+// “白色描边”：将边缘 Y 写为 255，U/V 写为 128
+function strokePolylineYUV(bufY, bufU, bufV, points, thickness, width, height) {
+  if (points.length < 2 || thickness <= 0) return;
+  const r = Math.max(1, thickness / 2), r2 = r * r;
+
+  const writeUV = (x, y) => {
+    const x2 = (x >> 1);
+    const y2 = (y >> 1);
+    if (x2 >= 0 && x2 < W2 && y2 >= 0 && y2 < H2) {
+      bufU[y2 * W2 + x2] = 128;
+      bufV[y2 * W2 + x2] = 128;
+    }
+  };
+
+  const drawSeg = (x0, y0, x1, y1) => {
+    const dx = x1 - x0, dy = y1 - y0, len2 = dx * dx + dy * dy;
+    const minX = clamp(Math.floor(Math.min(x0, x1) - r - 1), 0, width - 1);
+    const maxX = clamp(Math.ceil (Math.max(x0, x1) + r + 1), 0, width - 1);
+    const minY = clamp(Math.floor(Math.min(y0, y1) - r - 1), 0, height - 1);
+    const maxY = clamp(Math.ceil (Math.max(y0, y1) + r + 1), 0, height - 1);
+    for (let y = minY; y <= maxY; y++) {
+      const py = y + 0.5;
+      for (let x = minX; x <= maxX; x++) {
+        const px = x + 0.5;
+        let t = 0;
+        if (len2 > 0) {
+          t = ((px - x0) * dx + (py - y0) * dy) / len2;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+        }
+        const cx = x0 + t * dx, cy = y0 + t * dy;
+        const ddx = px - cx, ddy = py - cy;
+        if (ddx * ddx + ddy * ddy <= r2) {
+          bufY[y * width + x] = 255; // 白色描边（亮度）
+          writeUV(x, y);             // 色度中性
+        }
+      }
+    }
+  };
+
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    drawSeg(a.x, a.y, b.x, b.y);
+  }
+}
+
+// 从历史缓冲区获取最近的人脸位置
+function getLatestFaceFromHistory(faceHistoryBuffer) {
+  // 从最新的帧开始查找
+  for (let i = faceHistoryBuffer.length - 1; i >= 0; i--) {
+    const historyFrame = faceHistoryBuffer[i];
+    if (historyFrame && historyFrame.faceData) {
+      return historyFrame.faceData;
+    }
+  }
+  return null;
+}
+
+// 更新人脸历史缓冲区
+function updateFaceHistory(faceHistoryBuffer, frameCount, faceData, maxHistoryFrames = 5) {
+  // 添加当前帧的人脸数据
+  const historyEntry = {
+    frameNumber: frameCount,
+    faceData: faceData
+  };
+  
+  // 如果faceData存在，添加frameNumber到faceData中
+  if (faceData) {
+    faceData.frameNumber = frameCount;
+  }
+  
+  faceHistoryBuffer.push(historyEntry);
+  
+  // 保持缓冲区大小不超过maxHistoryFrames
+  if (faceHistoryBuffer.length > maxHistoryFrames) {
+    faceHistoryBuffer.shift();
+  }
+}
+
 // ---------------- 主逻辑 ----------------
 (async () => {
-  // 设置本地模型路径
   const modelPath = path.resolve(__dirname, 'models/movenet-tfjs-singlepose-lightning-v4/model.json');
-  console.error(`[processor] 使用本地模型: ${modelPath}`);
+  // console.error(`[processor] 使用本地模型: ${modelPath}`);
   
   const detector = await poseDetection.createDetector(
     poseDetection.SupportedModels.MoveNet,
@@ -303,12 +427,11 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
 
   // 预热
   {
-    const warm = tf.zeros([DH, DW, 3], 'float32');
+    const warm = tf.zeros([H, W, 3], 'float32');
     await detector.estimatePoses(warm, { maxPoses: argv.maxDetections, flipHorizontal: !!argv.flipHorizontal });
     warm.dispose();
   }
 
-  // stdin / stdout
   const stdin = process.stdin;
   const stdout = process.stdout;
   try { stdout._handle && stdout._handle.setBlocking && stdout._handle.setBlocking(true); } catch {}
@@ -317,10 +440,16 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
   let frameCount = 0;
   const startTime = Date.now();
   let lastProgressTime = startTime;
-
-  // 跳帧复用
-  let lastPoses = [];
-  let lastTriplet = null; // {nose:[x,y], left_ear:[x,y], right_ear:[x,y]}
+  
+  // 人脸位置历史缓冲区，存储最近5帧的人脸检测结果
+  const faceHistoryBuffer = [];
+  const MAX_HISTORY_FRAMES = 5;
+  
+  // 初始化保存未检测到人脸帧的功能
+  if (argv.saveNoFaceFrames) {
+    ensureDir(argv.noFaceFramesDir);
+    console.error(`[SAVE] 启用保存未检测到人脸的帧到目录: ${argv.noFaceFramesDir}`);
+  }
 
   const showProgress = () => {
     if (!argv.showProgress) return;
@@ -332,20 +461,6 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
     }
   };
 
-  const smallMotion = (pose) => {
-    if (!argv.adaptiveSkip || !lastTriplet) return false;
-    const n = getKP(pose.keypoints, 'nose');
-    const le = getKP(pose.keypoints, 'left_ear');
-    const re = getKP(pose.keypoints, 'right_ear');
-    if (!(n && le && re)) return false;
-    const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-    const L = (d([n.x, n.y], lastTriplet.nose) +
-               d([le.x, le.y], lastTriplet.left_ear) +
-               d([re.x, re.y], lastTriplet.right_ear)) / 3;
-    return L < 2.5; // 阈值可调
-  };
-
-  // 主循环
   try {
     for await (const chunk of stdin) {
       pending = Buffer.concat([pending, chunk]);
@@ -358,91 +473,151 @@ function fillPolygonUV(bufU, bufV, points, width2, height2) {
         const uPlane = frame.subarray(FRAME_Y, FRAME_Y + FRAME_U);
         const vPlane = frame.subarray(FRAME_Y + FRAME_U, FRAME_SIZE);
 
-        // 是否检测
-        let doDetect = (frameCount % Math.max(1, argv.detectEvery)) === 1;
-        if (!doDetect && argv.adaptiveSkip && lastPoses.length === 1) {
-          doDetect = !smallMotion(lastPoses[0]);
-        }
-
-        if (doDetect) {
-          // 仅用 Y 平面灰度降采样 -> 复制为 3 通道浮点
-          const smallRGB = downsampleY_toRGB(yPlane);
-          const img = tf.tensor3d(smallRGB, [DH, DW, 3], 'float32');
-          try {
-            const poses = await detector.estimatePoses(img, {
-              flipHorizontal: !!argv.flipHorizontal,
-              maxPoses: argv.maxDetections,
-              scoreThreshold: argv.scoreThreshold
-            });
-            lastPoses = poses || [];
-            // 坐标映射回原图尺度
-            for (const p of lastPoses) {
-              if (!p || !p.keypoints) continue;
-              for (let i = 0; i < p.keypoints.length; i++) {
-                const k = p.keypoints[i];
-                k.x *= SCALE_X;
-                k.y *= SCALE_Y;
-                // 限幅，避免越界
-                if (k.x < 0) k.x = 0; else if (k.x > W - 1) k.x = W - 1;
-                if (k.y < 0) k.y = 0; else if (k.y > H - 1) k.y = H - 1;
-              }
-            }
-          } finally {
-            img.dispose();
-          }
+        // 每帧都进行检测
+        // console.error(`[FRAME ${frameCount}] 开始检测...`);
+        const rgbData = yPlaneToRGB(yPlane);
+        const img = tf.tensor3d(rgbData, [H, W, 3], 'float32');
+        
+        let poses = [];
+        try {
+          poses = await detector.estimatePoses(img, {
+            flipHorizontal: !!argv.flipHorizontal,
+            maxPoses: argv.maxDetections,
+            scoreThreshold: argv.scoreThreshold
+          });
+          poses = poses || [];
+          // console.error(`[FRAME ${frameCount}] 检测到 ${poses.length} 个人体姿态`);
+        } finally {
+          img.dispose();
         }
 
         // 渲染到 Y/UV
-        const poses = lastPoses;
+        let masksDrawn = 0;
+        let currentFrameFaceData = null;
+        
+        // 处理当前帧检测到的人脸
         for (let pi = 0; pi < poses.length; pi++) {
           const pose = poses[pi];
-          if (!pose || pose.score < argv.minPoseConfidence) continue;
+          if (!pose || pose.score < argv.minPoseConfidence) {
+            // console.error(`[FRAME ${frameCount}] 姿态 ${pi + 1}: 置信度不足 (${pose?.score || 0} < ${argv.minPoseConfidence})`);
+            continue;
+          }
 
           const nose = getKP(pose.keypoints, 'nose');
           const le = getKP(pose.keypoints, 'left_ear');
           const re = getKP(pose.keypoints, 'right_ear');
-          if (!(nose && le && re)) continue;
-          if (le.score < argv.scoreThreshold || re.score < argv.scoreThreshold) continue;
+          
+          if (!(nose && le && re)) {
+            // console.error(`[FRAME ${frameCount}] 姿态 ${pi + 1}: 缺少关键点 (nose: ${!!nose}, left_ear: ${!!le}, right_ear: ${!!re})`);
+            continue;
+          }
+          
+          if (le.score < argv.scoreThreshold || re.score < argv.scoreThreshold) {
+            // console.error(`[FRAME ${frameCount}] 姿态 ${pi + 1}: 耳朵置信度不足 (left: ${le.score}, right: ${re.score} < ${argv.scoreThreshold})`);
+            continue;
+          }
 
           const lx = le.x, ly = le.y;
           const rx = re.x, ry = re.y;
           const nx = nose.x, ny = nose.y;
 
-          const faceAngle = Math.atan2(ly - ry, rx - lx);
-          const leftDist = Math.hypot(nx - lx, ny - ly);
-          const rightDist = Math.hypot(nx - rx, ny - ry);
-          const faceWidth = Math.max(leftDist, rightDist) * 2;
+          // 修正角度计算：atan2(左耳.y - 右耳.y, 左耳.x - 右耳.x) 确保面具倾斜方向与人脸方向一致
+          const faceAngle = Math.atan2(ly - ry, lx - rx);
+          // 耳距 = faceWidth
+          const faceWidth = Math.hypot(rx - lx, ry - ly);
 
+          // 面具尺寸
           const maskW = argv.maskScaleW * faceWidth;
           const maskH = argv.maskScaleH * faceWidth;
 
           const cx = clamp(nx, 0, W - 1);
           const cy = clamp(ny, 0, H - 1);
 
-          // 生成“超椭圆”面具并放置到脸部
-          const localPoly = buildBeautyMaskPolyline(
-            maskW,
-            maskH,
-            Math.max(24, argv.samplesPerCurve)
-          );
-          const polyAll = transformPolyline(localPoly, cx, cy, faceAngle);
+          // console.error(`[FRAME ${frameCount}] 姿态 ${pi + 1}: 绘制面具 - 鼻尖(${nx.toFixed(1)}, ${ny.toFixed(1)}), 耳距: ${faceWidth.toFixed(1)}, 角度: ${(faceAngle * 180 / Math.PI).toFixed(1)}°, 面具尺寸: ${maskW.toFixed(1)}x${maskH.toFixed(1)}`);
 
-          // ★ 仅遮罩“鼻子以上” → 裁剪半平面 y <= nose.y + 10
-          const poly = clipPolygonAbove(polyAll, ny + 10);
-          if (poly.length < 3) continue;
+          // 生成并放置多边形：已按 Canvas 旋转公式，方向与前端一致（竖直翻转已修正）
+          const localPoly = buildLiquidMaskPolyline(maskW, maskH, Math.max(16, argv.samplesPerCurve));
+          const poly = transformPolyline(localPoly, cx, cy, faceAngle);
 
-          // 填充到 Y；描边可选；UV=128
-          fillPolygonY(yPlane, poly, W, H);
-          if (argv.strokeWidth > 0) {
-            strokePolylineY(yPlane, poly, argv.strokeWidth, W, H);
+          if (poly.length < 3) {
+            // console.error(`[FRAME ${frameCount}] 姿态 ${pi + 1}: 多边形点数不足 (${poly.length} < 3)`);
+            continue;
           }
+
+          // 先填充黑，再描边白
+          fillPolygonY(yPlane, poly, W, H);
           fillPolygonUV(uPlane, vPlane, poly, W2, H2);
 
-          // 更新位移缓存
-          lastTriplet = { nose: [nx, ny], left_ear: [lx, ly], right_ear: [rx, ry] };
+          if (argv.strokeWidth > 0) {
+            strokePolylineYUV(yPlane, uPlane, vPlane, poly, argv.strokeWidth, W, H);
+          }
+
+          masksDrawn++;
+          // console.error(`[FRAME ${frameCount}] 姿态 ${pi + 1}: 面具绘制完成`);
+          
+          // 保存当前帧的人脸数据到历史缓冲区
+          if (pi === 0) { // 只保存第一个有效的人脸数据
+            currentFrameFaceData = {
+              nose: { x: nx, y: ny },
+              leftEar: { x: lx, y: ly },
+              rightEar: { x: rx, y: ry },
+              faceAngle: faceAngle,
+              faceWidth: faceWidth,
+              maskW: maskW,
+              maskH: maskH
+            };
+          }
+        }
+        
+        // 如果当前帧未检测到人脸，尝试使用历史数据
+        if (masksDrawn === 0) {
+          const historyFaceData = getLatestFaceFromHistory(faceHistoryBuffer);
+          if (historyFaceData) {
+            // console.error(`[FRAME ${frameCount}] 未检测到人脸，使用历史数据绘制面具 - 来自帧 ${historyFaceData.frameNumber || '未知'}`);
+            
+            const { nose, leftEar, rightEar, faceAngle, faceWidth, maskW, maskH } = historyFaceData;
+            const cx = clamp(nose.x, 0, W - 1);
+            const cy = clamp(nose.y, 0, H - 1);
+
+            // 生成并放置多边形
+            const localPoly = buildLiquidMaskPolyline(maskW, maskH, Math.max(16, argv.samplesPerCurve));
+            const poly = transformPolyline(localPoly, cx, cy, faceAngle);
+
+            if (poly.length >= 3) {
+              // 先填充黑，再描边白
+              fillPolygonY(yPlane, poly, W, H);
+              fillPolygonUV(uPlane, vPlane, poly, W2, H2);
+
+              if (argv.strokeWidth > 0) {
+                strokePolylineYUV(yPlane, uPlane, vPlane, poly, argv.strokeWidth, W, H);
+              }
+
+              masksDrawn++;
+              // console.error(`[FRAME ${frameCount}] 使用历史数据绘制面具完成`);
+            } else {
+              // console.error(`[FRAME ${frameCount}] 历史数据多边形点数不足 (${poly.length} < 3)`);
+            }
+          } else {
+            // console.error(`[FRAME ${frameCount}] 未检测到人脸且无历史数据可用`);
+          }
+        }
+        
+        // 更新人脸历史缓冲区
+        updateFaceHistory(faceHistoryBuffer, frameCount, currentFrameFaceData, MAX_HISTORY_FRAMES);
+        
+        // console.error(`[FRAME ${frameCount}] 处理完成 - 检测到 ${poses.length} 个姿态，绘制了 ${masksDrawn} 个面具`);
+
+        // 如果启用了保存功能且未检测到人脸，保存当前帧
+        if (argv.saveNoFaceFrames && masksDrawn === 0 && (frameCount % argv.saveEveryNFrames === 0)) {
+          try {
+            const outputPath = path.join(argv.noFaceFramesDir, `frame_${frameCount.toString().padStart(6, '0')}.png`);
+            await saveYUVFrameAsPNG(yPlane, uPlane, vPlane, W, H, outputPath);
+            console.error(`[SAVE] 保存未检测到人脸的帧: ${outputPath}`);
+          } catch (error) {
+            console.error(`[SAVE] 保存帧失败: ${error.message}`);
+          }
         }
 
-        // 写回
         if (!stdout.write(frame)) await new Promise(res => stdout.once('drain', res));
         showProgress();
       }
