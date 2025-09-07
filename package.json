@@ -8,7 +8,14 @@
     "exec:ultra": "node exec.js ULTRA_FAST",
     "exec:standard": "node exec.js STANDARD",
     "exec:quality": "node exec.js HIGH_QUALITY",
-    "vod:eye-blur": "node vod_eye_blur_example.js"
+    "vod:eye-blur": "node vod_eye_blur_example.js",
+    "vod:optimized": "node vod_eye_blur_optimized_example.js",
+    "vod:optimized:test": "node vod_eye_blur_optimized_example.js --test",
+    "vod:fast": "node vod_eye_blur_fast_example.js",
+    "vod:fast:test": "node vod_eye_blur_fast_example.js --test",
+    "test:balanced": "node test_balanced_mode.js",
+    "simple:balanced": "node simple_balanced_test.js",
+    "debug:processor": "node processor_debug.js --width 1280 --height 720 --showProgress true --saveNoFaceFrames true --saveAllFrames true"
   },
   "keywords": [
     "video",
@@ -28,6 +35,8 @@
     "@tensorflow-models/pose-detection": "^2.1.0",
     "@tensorflow/tfjs-backend-webgpu": "^4.22.0",
     "@tensorflow/tfjs-node": "^4.22.0",
+    "@tensorflow-models/posenet": "^2.2.2",
+    "canvas": "^3.2.0",
     "ali-oss": "^6.20.0",
     "yargs": "^16.0.0"
   },
