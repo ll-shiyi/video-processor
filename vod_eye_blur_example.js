@@ -11,13 +11,15 @@ async function main() {
   const config = {
     // VOD 配置
      // VOD 配置
-     accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xxx',
-     accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xxx',
+     accessKeyId: process.env.ALIYUN_ACCESS_KEY_ID || 'xx',
+     accessKeySecret: process.env.ALIYUN_ACCESS_KEY_SECRET || 'xx',
      region: 'cn-shanghai',
      
     
     // 源视频ID
-    videoId: '90f6532082f471f0bffa4531958c0102', 
+    // videoId: '20077f7887d571f0a1664531958d0102', 
+    videoId: 'a0145ebb8a0571f095b66723b78e0102', 
+    // videoId: '807f172289fa71f0a1784531958d0102', 
     outputTitle: '隐私保护处理后的视频',
     outputDescription: '使用MoveNet进行眼部遮挡处理的视频',
     
@@ -27,17 +29,17 @@ async function main() {
     // fps: 30,      // 手机视频通常30fps
     crf: 20,      // 提高质量，减少压缩伪影
     
-    // 姿态检测参数 - 针对手机视频优化
-    minScore: 0.1,          // 提高置信度阈值，减少误检
-    detectScale: 0.4,        // 适中的检测缩放比例
-    detectEvery: 2,          // 更频繁的检测，适应手机视频
+    // 姿态检测参数 - 针对多人场景优化
+    minScore: 0.1,         // 降低置信度阈值，提高角落人员检测率
+    detectScale: 0.4,       // 适中的检测缩放比例
+    detectEvery: 1,          // 更频繁的检测，适应手机视频
     enableSmoothing: true,   // 启用平滑
     adaptiveSkip: true,      // 自适应跳过
-    maxDetections: 3,        // 减少最大检测数量，提高性能
+    maxDetections: 3,        // 增加最大检测数量，覆盖更多人员
     
     // 面具参数 - 针对手机视频优化
-    maskScaleW: 1.4,         // 稍微增大面具宽度
-    maskScaleH: 2.0,         // 增大面具高度，适应手机竖屏
+    maskScaleW: 1.3,         // 增大面具宽度，提供更好的遮挡效果
+    maskScaleH: 1.8,         // 增大面具高度，适应手机竖屏
     samplesPerCurve: 32,     // 增加采样点，提高面具质量
     strokeWidth: 2,          // 增加描边宽度，提高可见性
     
@@ -153,7 +155,7 @@ const argv = yargs(hideBin(process.argv))
         detectScale: 0.35,    // 更精确的检测
         detectEvery: 1,       // 每帧检测
         maxDetections: 2,     // 减少检测数量
-        maskScaleW: 1.5,      // 更大的面具
+        maskScaleW: 2.0,      // 更大的面具宽度
         maskScaleH: 2.2,      // 适应竖屏
         samplesPerCurve: 40,  // 更平滑的曲线
         strokeWidth: 3,       // 更明显的描边
